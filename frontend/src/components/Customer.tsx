@@ -205,7 +205,7 @@ const Customer: React.FC<CustomerProps> = ({ contractAddress }) => {
       if (timeout) clearTimeout(timeout);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contractAddress, fetchMarketData, market?.is_resolved, waitingForResolve, market?.fee_withdrawn, market?.final_price]);
+  }, [contractAddress, fetchMarketData, market?.is_resolved, waitingForResolve, market?.fee_withdrawn, market?.final_price, fetchUserPositions]);
 
   // Fetch position history for the market - build from BidEvents
   useEffect(() => {
@@ -294,7 +294,7 @@ const Customer: React.FC<CustomerProps> = ({ contractAddress }) => {
     if (market?.is_resolved && account?.address) {
       fetchUserPositions();
     }
-  }, [market?.is_resolved, account?.address]);
+  }, [market?.is_resolved, account?.address, fetchUserPositions]);
 
   // Fetch asset price
   useEffect(() => {
