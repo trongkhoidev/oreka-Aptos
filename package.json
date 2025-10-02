@@ -13,7 +13,8 @@
     "express": "^5.1.0",
     "node-fetch": "^3.3.2",
     "petra-plugin-wallet-adapter": "^0.4.5",
-    "react-chartjs-2": "^5.3.0"
+    "react-chartjs-2": "^5.3.0",
+    "vercel-build": "cd frontend && npm install && npm run vercel-build"
   },
   "devDependencies": {
     "eslint": "^9.31.0",
