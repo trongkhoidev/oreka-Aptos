@@ -50,6 +50,20 @@ module yugo::binary_option_market {
         withdraw_fee_events: EventHandle<WithdrawFeeEvent>,
     }
 
+    /// Statistics for a specific user
+    struct UserStats has store, copy, drop {
+        user_addr: address,
+        total_volume: u64,
+        total_winnings: u64,
+        markets_played: u64,
+        markets_won: u64,
+    }
+
+    /// Global user stats registry
+    struct UserStatsRegistry has key {
+        stats: table::Table<address, UserStats>,
+    }
+
     /// A resource that represents a binary option market.
     /// This is the main resource that holds all the market data.
     struct Market has key, store {
@@ -120,6 +134,7 @@ module yugo::binary_option_market {
     #[event]
     struct ResolveEvent has drop, store {
         resolver: address,
+        market_address: address,
         final_price: u64,
         result: u8,
     }
@@ -127,6 +142,7 @@ module yugo::binary_option_market {
     #[event]
     struct ClaimEvent has drop, store {
         user: address,
+        market_address: address,
         amount: u64,
         won: bool,
     }
@@ -134,6 +150,7 @@ module yugo::binary_option_market {
     #[event]
     struct WithdrawFeeEvent has drop, store {
         owner: address,
+        market_address: address,
         amount: u64,
     }
 
@@ -162,6 +179,10 @@ module yugo::binary_option_market {
             resolve_events: account::new_event_handle<ResolveEvent>(account),
             claim_events: account::new_event_handle<ClaimEvent>(account),
             withdraw_fee_events: account::new_event_handle<WithdrawFeeEvent>(account),
+        });
+
+        move_to(account, UserStatsRegistry {
+            stats: table::new(),
         });
     }
 
@@ -265,7 +286,7 @@ module yugo::binary_option_market {
     }
 
     /// Allows a user to place a bid on a market.
-    public entry fun bid(owner: &signer, market_addr: address, prediction: bool, amount: u64, timestamp_bid: u64) acquires Market, MarketRegistry {
+    public entry fun bid(owner: &signer, market_addr: address, prediction: bool, amount: u64, timestamp_bid: u64) acquires Market, MarketRegistry, UserStatsRegistry {
         let market = borrow_global_mut<Market>(market_addr);
         
         let now = timestamp::now_seconds();
@@ -279,10 +300,29 @@ module yugo::binary_option_market {
         coin::merge(&mut market.coin_vault, coins);
         
         let user_bid;
+        let is_new_bidder = !table::contains(&market.bids, bidder_address);
         if (table::contains(&market.bids, bidder_address)) {
             user_bid = table::remove(&mut market.bids, bidder_address);
         } else {
             user_bid = Bid { long_amount: 0, short_amount: 0 };
+        };
+
+        // Update UserStatsRegistry
+        let user_stats_registry = borrow_global_mut<UserStatsRegistry>(@yugo);
+        if (!table::contains(&user_stats_registry.stats, bidder_address)) {
+            table::add(&mut user_stats_registry.stats, bidder_address, UserStats {
+                user_addr: bidder_address,
+                total_volume: amount,
+                total_winnings: 0,
+                markets_played: 1,
+                markets_won: 0,
+            });
+        } else {
+            let stats = table::borrow_mut(&mut user_stats_registry.stats, bidder_address);
+            stats.total_volume = stats.total_volume + amount;
+            if (is_new_bidder) {
+                stats.markets_played = stats.markets_played + 1;
+            };
         };
         
         let new_user_bid = if (prediction) {
@@ -350,13 +390,14 @@ module yugo::binary_option_market {
         let registry = borrow_global_mut<MarketRegistry>(@yugo);
         event::emit_event(&mut registry.resolve_events, ResolveEvent {
             resolver: signer::address_of(caller),
+            market_address: market_addr,
             final_price,
             result,
         });
     }
 
     /// Allows a user to claim their winnings or refund.
-    public entry fun claim(owner: &signer, market_addr: address) acquires Market, MarketRegistry {
+    public entry fun claim(owner: &signer, market_addr: address) acquires Market, MarketRegistry, UserStatsRegistry {
         let market = borrow_global_mut<Market>(market_addr);
         
         let now = timestamp::now_seconds();
@@ -395,6 +436,24 @@ module yugo::binary_option_market {
         let fee = (market.fee_percentage * raw_amount) / 1000;
         let claim_amount = raw_amount - fee;
 
+        // Update UserStatsRegistry
+        let user_stats_registry = borrow_global_mut<UserStatsRegistry>(@yugo);
+        if (!table::contains(&user_stats_registry.stats, bidder_address)) {
+            table::add(&mut user_stats_registry.stats, bidder_address, UserStats {
+                user_addr: bidder_address,
+                total_volume: 0,
+                total_winnings: claim_amount,
+                markets_played: 0, // Unlikely edge case where bid wasn't recorded correctly
+                markets_won: if (won && claim_amount > 0) 1 else 0,
+            });
+        } else {
+            let stats = table::borrow_mut(&mut user_stats_registry.stats, bidder_address);
+            stats.total_winnings = stats.total_winnings + claim_amount;
+            if (won && claim_amount > 0) {
+                stats.markets_won = stats.markets_won + 1;
+            };
+        };
+
         // Transfer coins from market vault to user
         let payout = coin::extract(&mut market.coin_vault, claim_amount);
         coin::deposit(bidder_address, payout);
@@ -406,6 +465,7 @@ module yugo::binary_option_market {
         let registry = borrow_global_mut<MarketRegistry>(@yugo);
         event::emit_event(&mut registry.claim_events, ClaimEvent {
             user: bidder_address,
+            market_address: market_addr,
             amount: claim_amount,
             won,
         });
@@ -431,6 +491,7 @@ module yugo::binary_option_market {
         let registry = borrow_global_mut<MarketRegistry>(@yugo);
         event::emit_event(&mut registry.withdraw_fee_events, WithdrawFeeEvent {
             owner: signer::address_of(owner),
+            market_address,
             amount: fee,
         });
     }
@@ -560,6 +621,18 @@ module yugo::binary_option_market {
             vector::length(table::borrow(&registry.owner_markets, owner))
         } else {
             0
+        }
+    }
+
+    // Get user stats
+    #[view]
+    public fun get_user_stats(user: address): (u64, u64, u64, u64) acquires UserStatsRegistry {
+        let registry = borrow_global<UserStatsRegistry>(@yugo);
+        if (table::contains(&registry.stats, user)) {
+            let stats = table::borrow(&registry.stats, user);
+            (stats.total_volume, stats.total_winnings, stats.markets_played, stats.markets_won)
+        } else {
+            (0, 0, 0, 0)
         }
     }
 }

@@ -1,451 +1,434 @@
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import { useState, useEffect } from 'react';
 import { 
   Box, 
   VStack, 
   HStack, 
   Text, 
-  Button, 
   Spinner, 
   Center,
   Grid,
-  Badge,
+  Container,
+  Heading,
+  Icon,
+  Tabs,
+  TabList,
+  Tab,
   Table,
   Thead,
   Tbody,
   Tr,
   Th,
-  Td
+  Td,
+  Badge,
+  useToast,
+  Select,
+  Flex
 } from '@chakra-ui/react';
-
-interface ProfileData {
-  user_addr: string;
-  totals: {
-    bet: { raw: string; human: string };
-    winning: { raw: string; human: string };
-    owner_fee: { raw: string; human: string };
-  };
-  counts: {
-    played: number;
-    created: number;
-    won: number;
-  };
-}
-
-interface ActivityData {
-  type: string;
-  market_addr: string;
-  amount: string;
-  amount_raw: string;
-  side: number;
-  created_at: string;
-  status: string;
-  time: string;
-}
+import { 
+  FiUser, 
+  FiTrendingUp, 
+  FiAward, 
+  FiActivity, 
+  FiStar, 
+  FiPieChart, 
+  FiCalendar, 
+  FiDollarSign,
+  FiZap
+} from 'react-icons/fi';
+import { FaTrophy } from 'react-icons/fa';
+import { profileService, ProfileStats, BetHistoryEntry } from '../../src/services/profileService';
+import { StatCard } from '../../src/components/shared/StatCard';
+import { PnlIndicator } from '../../src/components/shared/PnlIndicator';
+import { AddressLink } from '../../src/components/shared/AddressLink';
+import { PaginationControls } from '../../src/components/shared/PaginationControls';
 
 export default function ProfilePage() {
   const router = useRouter();
   const { addr } = router.query;
   const address = addr as string;
+  const toast = useToast();
   
-  const [data, setData] = useState<ProfileData | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const [profile, setProfile] = useState<ProfileStats | null>(null);
+  const [history, setHistory] = useState<BetHistoryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [activityData, setActivityData] = useState<ActivityData[]>([]);
-  const [isLoadingActivity, setIsLoadingActivity] = useState(true);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [historyStatus, setHistoryStatus] = useState('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [historyCount, setHistoryCount] = useState(0);
+  const [selectedMonth, setSelectedMonth] = useState('');
+  const [monthlyData, setMonthlyData] = useState<ProfileStats['monthly'] | null>(null);
+
+  // Helper to get last 6 months
+  const getRecentMonths = () => {
+    const months = [];
+    const date = new Date();
+    for (let i = 0; i < 6; i++) {
+        const d = new Date(date.getFullYear(), date.getMonth() - i, 1);
+        const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        months.push({ label: d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }), value: ym });
+    }
+    return months;
+  };
+
+  const recentMonths = getRecentMonths();
 
   useEffect(() => {
     if (!address) return;
 
-    const fetchProfile = async () => {
+    const loadData = async () => {
       try {
         setIsLoading(true);
-        setError(null);
-        console.log('Fetching profile for:', address);
-        const resp = await fetch(`/api/profile/${address.toLowerCase()}`); // update
-        const raw = await resp.json();
-        console.log('Profile data:', raw);
-
-        // Normalize to guard against partial/error payloads
-        const normalized: ProfileData = {
-          user_addr: raw?.user_addr || address,
-          totals: {
-            bet: {
-              raw: String(raw?.totals?.bet?.raw ?? '0'),
-              human: String(raw?.totals?.bet?.human ?? '0'),
-            },
-            winning: {
-              raw: String(raw?.totals?.winning?.raw ?? '0'),
-              human: String(raw?.totals?.winning?.human ?? '0'),
-            },
-            owner_fee: {
-              raw: String(raw?.totals?.owner_fee?.raw ?? '0'),
-              human: String(raw?.totals?.owner_fee?.human ?? '0'),
-            },
-          },
-          counts: {
-            played: Number(raw?.counts?.played ?? 0),
-            created: Number(raw?.counts?.created ?? 0),
-            won: Number(raw?.counts?.won ?? 0),
-          },
-        };
-
-        if (raw?.error && !resp.ok) {
-          throw new Error(raw.error);
-        }
-
-        setData(normalized);
+        const data = await profileService.getProfile(address.toLowerCase());
+        setProfile(data);
+        setMonthlyData(data.monthly);
+        setSelectedMonth(data.monthly.ym);
+        
+        // Initial history load
+        await loadHistory(1, 'all');
       } catch (err) {
-        console.error('Error fetching profile:', err);
-        setError(err as Error);
+        console.error('Error loading profile:', err);
+        toast({
+          title: 'Error loading profile',
+          description: 'Could not fetch profile data from the server.',
+          status: 'error',
+          duration: 5000,
+          isClosable: true,
+        });
       } finally {
         setIsLoading(false);
       }
     };
 
-    const fetchActivity = async () => {
-      try {
-        setIsLoadingActivity(true);
-        console.log('Fetching activity for:', address);
-        const response = await fetch(`http://localhost:4000/profiles/${address}/activity?limit=10`);
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const activityResponse = await response.json();
-        console.log('Activity data:', activityResponse);
-        setActivityData(activityResponse.activities || []);
-      } catch (err) {
-        console.error('Error fetching activity:', err);
-        setActivityData([]); // Fallback to empty array
-      } finally {
-        setIsLoadingActivity(false);
-      }
-    };
-
-    fetchProfile();
-    fetchActivity();
+    loadData();
   }, [address]);
 
-  const shorten = (addr: string, head = 6, tail = 4) => {
-    if (!addr) return '';
-    return addr.length > head + tail ? `${addr.slice(0, head)}…${addr.slice(-tail)}` : addr;
-  };
-
-  const formatHuman = (v: string | number | null | undefined) => {
-    if (v == null) return '0';
-    const s = typeof v === 'number' ? String(v) : v;
-    const [int, frac = ''] = s.split('.');
-    const intFmt = Number(int).toLocaleString();
-    const fracTrim = frac.replace(/0+$/, '');
-    return fracTrim ? `${intFmt}.${fracTrim.slice(0, 6)}` : intFmt;
-  };
-
-  if (error) {
-    return (
-      <Center minH="50vh">
-        <VStack spacing={4}>
-          <Text fontSize="xl" color="red.400">Error Loading Profile</Text>
-          <Text color="gray.400">Error: {error.message}</Text>
-          <Button 
-            onClick={() => window.location.reload()}
-            colorScheme="blue"
-          >
-            Retry
-          </Button>
-        </VStack>
-      </Center>
-    );
-  }
-  
-  if (isLoading || !data) {
-    return (
-      <Center minH="50vh">
-        <VStack spacing={4}>
-          <Spinner size="xl" color="blue.500" />
-          <Text color="gray.400">Loading profile...</Text>
-        </VStack>
-      </Center>
-    );
-  }
-
-  // Real activity data from API
-
-  const getActivityIcon = (type: string) => {
-    switch (type) {
-      case 'bet': return '🎯';
-      case 'claim': return '🏆';
-      case 'create': return '➕';
-      case 'withdraw_fee': return '💰';
-      default: return '📝';
+  const handleMonthChange = async (ym: string) => {
+    if (!address) return;
+    try {
+        setSelectedMonth(ym);
+        const data = await profileService.getMonthly(address.toLowerCase(), ym);
+        setMonthlyData(data);
+    } catch (err) {
+        console.error('Error loading monthly data:', err);
     }
   };
 
-  const getActivityColor = (type: string) => {
-    switch (type) {
-      case 'bet': return 'blue';
-      case 'claim': return 'green';
-      case 'create': return 'purple';
-      case 'withdraw_fee': return 'orange';
-      default: return 'gray';
+  const loadHistory = async (page: number, status: string) => {
+    if (!address) return;
+    try {
+      setIsLoadingHistory(true);
+      const limit = 10;
+      const res = await profileService.getHistory(address.toLowerCase(), page, limit, status);
+      setHistory(res.history);
+      setHistoryCount(res.count);
+      setTotalPages(Math.ceil(res.count / limit) || 1);
+      setCurrentPage(page);
+    } catch (err) {
+      console.error('Error loading history:', err);
+    } finally {
+      setIsLoadingHistory(false);
     }
   };
+
+  const handleStatusChange = (status: string) => {
+    setHistoryStatus(status);
+    loadHistory(1, status);
+  };
+
+  const handlePageChange = (page: number) => {
+    loadHistory(page, historyStatus);
+  };
+
+  if (isLoading || !profile) {
+    return (
+      <Box minH="100vh" bg="#020617" pt="100px">
+        <Center h="50vh">
+          <VStack spacing={4}>
+            <Spinner size="xl" color="blue.500" thickness="4px" />
+            <Text color="whiteAlpha.600" fontWeight="medium">Loading trader profile...</Text>
+          </VStack>
+        </Center>
+      </Box>
+    );
+  }
 
   return (
-    <Box maxW="7xl" mx="auto" p={6}>
-      {/* Header */}
-      <Box bg="dark.700" rounded="xl" p={6} mb={6} border="1px" borderColor="dark.600">
-        <HStack justify="space-between">
-          <HStack spacing={4}>
+    <Box minH="100vh" bg="#020617" pt="100px" pb={20}>
+      <Container maxW="container.xl">
+        {/* Header Section */}
+        <Box 
+          mb={10} 
+          p={8} 
+          borderRadius="2xl" 
+          bg="rgba(30, 41, 59, 0.4)" 
+          borderWidth="1px" 
+          borderColor="whiteAlpha.100"
+          backdropFilter="blur(20px)"
+        >
+          <Grid templateColumns={{ base: "1fr", md: "auto 1fr auto" }} gap={8} alignItems="center">
             <Box 
-              w={16} 
-              h={16} 
-              bgGradient="linear(to-br, blue.500, purple.600)" 
-              rounded="full" 
+              w={24} 
+              h={24} 
+              bgGradient="linear(to-br, blue.600, purple.700)" 
+              borderRadius="2xl" 
               display="flex" 
               alignItems="center" 
               justifyContent="center"
+              boxShadow="0 10px 30px rgba(37, 99, 235, 0.3)"
             >
-              <Text color="white" fontSize="xl" fontWeight="bold">
-                {address.slice(2, 4).toUpperCase()}
+              <Text color="white" fontSize="3xl" fontWeight="black">
+                {profile.user_addr.slice(2, 4).toUpperCase()}
               </Text>
             </Box>
-            <VStack align="start" spacing={1}>
-              <HStack spacing={2}>
-                <Text fontFamily="mono" fontSize="lg" color="gray.400">
-                  Wallet Address: {shorten(address, 10, 8)}
-                </Text>
-                <Button
-                  size="xs"
-                  variant="ghost"
-                  onClick={() => navigator.clipboard.writeText(address)}
-                  color="blue.400"
-                  _hover={{ color: "blue.300" }}
-                >
-                  📋
-                </Button>
+
+            <VStack align="start" spacing={2}>
+              <HStack>
+                <Heading size="lg" color="white" letterSpacing="tight">Trader Profile</Heading>
+                <Badge colorScheme="blue" variant="solid" borderRadius="full" px={3} py={0.5}>
+                  Level {profile.metadata.level}
+                </Badge>
+              </HStack>
+              <AddressLink 
+                address={profile.user_addr} 
+                isTruncated={false} 
+                fontSize="md" 
+                fontWeight="bold"
+              />
+              <HStack spacing={4} mt={2}>
+                <HStack color="whiteAlpha.500">
+                  <Icon as={FiCalendar} />
+                  <Text fontSize="xs">Joined {new Date(profile.metadata.joined_at).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}</Text>
+                </HStack>
+                <HStack color="whiteAlpha.500">
+                  <Icon as={FiStar} />
+                  <Text fontSize="xs">{profile.metadata.rank_label}</Text>
+                </HStack>
               </HStack>
             </VStack>
-          </HStack>
-          
-          <Button
-            as="a"
-            href={`/profiles/${address}`}
-            size="sm"
-            variant="link"
-            color="blue.400"
-            _hover={{ color: "blue.300" }}
+
+            <Box>
+              <VStack align={{ base: "start", md: "end" }} spacing={1}>
+                <Text color="whiteAlpha.600" fontSize="xs" fontWeight="bold" textTransform="uppercase">Total Net Profit</Text>
+                <PnlIndicator value={profile.totals.pnl.human} fontSize="3xl" prefix="$" />
+                <Text color="whiteAlpha.400" fontSize="xs">All-time trading performance</Text>
+              </VStack>
+            </Box>
+          </Grid>
+        </Box>
+
+        {/* Global Stats Grid */}
+        <Grid templateColumns={{ base: "1fr", lg: "repeat(4, 1fr)" }} gap={6} mb={10}>
+          <StatCard 
+            label="Win Rate" 
+            value={`${profile.totals.win_rate}%`} 
+            icon={FaTrophy} 
+            subtitle={<PnlIndicator value={profile.totals.roi} showIcon={false} prefix="ROI: " fontSize="xs" />}
+            variant="gradient"
+          />
+          <StatCard 
+            label="Volume" 
+            value={`$${profile.totals.bet.human}`} 
+            icon={FiActivity} 
+            subtitle={`${profile.counts.played} trades placed`}
+          />
+          <StatCard 
+            label="Winnings" 
+            value={`$${profile.totals.winning.human}`} 
+            icon={FiDollarSign} 
+            subtitle={`${profile.counts.won} profitable positions`}
+          />
+          <StatCard 
+            label="Fees Earned" 
+            value={`$${profile.totals.owner_fee.human}`} 
+            icon={FiAward} 
+            subtitle={`From ${profile.counts.created} created markets`}
+          />
+        </Grid>
+
+        <Grid templateColumns={{ base: "1fr", lg: "1fr 2fr" }} gap={8}>
+          {/* Left Column: Monthly Snapshot */}
+          <VStack align="stretch" spacing={6}>
+            <Box 
+              bg="rgba(30, 41, 59, 0.4)" 
+              borderRadius="2xl" 
+              p={6} 
+              borderWidth="1px" 
+              borderColor={(monthlyData?.is_profitable ?? profile.monthly.is_profitable) ? "green.500/30" : "red.500/30"}
+              boxShadow={(monthlyData?.is_profitable ?? profile.monthly.is_profitable) ? "0 0 20px rgba(72, 187, 120, 0.05)" : "none"}
+            >
+              <HStack justify="space-between" mb={6}>
+                <HStack color="white">
+                  <Icon as={FiPieChart} boxSize={5} />
+                  <Heading size="sm">Monthly Snapshot</Heading>
+                </HStack>
+                <Select 
+                  size="xs" 
+                  w="140px" 
+                  bg="whiteAlpha.100" 
+                  border="none" 
+                  color="white" 
+                  value={selectedMonth}
+                  onChange={(e) => handleMonthChange(e.target.value)}
+                  _focus={{ ring: 0 }}
+                >
+                  {recentMonths.map(m => (
+                    <option key={m.value} value={m.value} style={{ background: '#020617' }}>{m.label}</option>
+                  ))}
+                </Select>
+              </HStack>
+
+              <VStack align="center" py={4} spacing={2}>
+                <Text color="whiteAlpha.600" fontSize="2xs" fontWeight="bold" textTransform="uppercase" letterSpacing="widest">Monthly P&L</Text>
+                <PnlIndicator value={monthlyData?.pnl.human || profile.monthly.pnl.human} fontSize="4xl" prefix="$" />
+                <Badge colorScheme={(monthlyData?.is_profitable ?? profile.monthly.is_profitable) ? "green" : "red"} variant="subtle" px={4} py={1} borderRadius="full">
+                  {(monthlyData?.is_profitable ?? profile.monthly.is_profitable) ? "PROFITABLE" : "LOSS"}
+                </Badge>
+              </VStack>
+
+              <Grid templateColumns="1fr 1fr" gap={4} mt={8}>
+                <VStack align="start" bg="whiteAlpha.50" p={3} borderRadius="xl">
+                  <Text color="whiteAlpha.500" fontSize="2xs" fontWeight="bold">WIN RATE</Text>
+                  <Text color="white" fontWeight="bold">{monthlyData?.win_rate ?? profile.monthly.win_rate}%</Text>
+                </VStack>
+                <VStack align="start" bg="whiteAlpha.50" p={3} borderRadius="xl">
+                  <Text color="whiteAlpha.500" fontSize="2xs" fontWeight="bold">TRADES</Text>
+                  <Text color="white" fontWeight="bold">{monthlyData?.played ?? profile.monthly.played}</Text>
+                </VStack>
+              </Grid>
+            </Box>
+
+            <Box 
+              bg="rgba(30, 41, 59, 0.4)" 
+              borderRadius="2xl" 
+              p={6} 
+              borderWidth="1px" 
+              borderColor="whiteAlpha.100"
+            >
+              <HStack mb={4}>
+                <Icon as={FiZap} color="orange.400" />
+                <Text color="white" fontWeight="bold">Achievements</Text>
+              </HStack>
+              <HStack spacing={2} wrap="wrap">
+                {profile.metadata.achievements.map((achievement, idx) => (
+                  <Badge key={idx} colorScheme={idx % 2 === 0 ? "orange" : "purple"} variant="outline" p={1} borderRadius="lg">
+                    {achievement}
+                  </Badge>
+                ))}
+                {profile.metadata.achievements.length === 0 && (
+                  <Text color="whiteAlpha.400" fontSize="xs">No achievements yet</Text>
+                )}
+              </HStack>
+            </Box>
+          </VStack>
+
+          {/* Right Column: Betting History */}
+          <Box 
+             bg="rgba(30, 41, 59, 0.2)" 
+             borderRadius="2xl" 
+             borderWidth="1px" 
+             borderColor="whiteAlpha.100"
+             overflow="hidden"
           >
-            🔗 Permalink
-          </Button>
-        </HStack>
-      </Box>
-
-      {/* Stats Section - 2 Columns */}
-      <Grid templateColumns={{ base: "1fr", lg: "1fr 1fr" }} gap={6} mb={6}>
-        {/* User Stats Column */}
-        <Box bg="dark.700" rounded="xl" p={6} border="1px" borderColor="dark.600">
-          <VStack spacing={4} align="stretch">
-            <HStack>
-              <Text fontSize="lg" fontWeight="semibold" color="blue.400">👤 User Statistics</Text>
-              <Badge colorScheme="blue" variant="subtle">As Bettor</Badge>
-            </HStack>
-            
-            <VStack spacing={3} align="stretch">
-              <Box bg="dark.600" rounded="lg" p={4}>
-                <HStack justify="space-between">
-                  <VStack align="start" spacing={1}>
-                    <Text fontSize="sm" color="gray.400">Markets Bet</Text>
-                    <Text fontSize="2xl" fontWeight="bold" color="white">
-                      {data.counts.played}
-                    </Text>
-                    <Text fontSize="xs" color="gray.500">Total markets participated</Text>
-                  </VStack>
-                  <Text fontSize="2xl">🎯</Text>
+            <Box p={6}>
+              <Flex justify="space-between" align="center" mb={6}>
+                <Heading size="sm" color="white">Betting History</Heading>
+                <HStack spacing={4}>
+                  <Tabs size="sm" variant="soft-rounded" colorScheme="blue" onChange={(idx) => {
+                    const statuses = ['all', 'active', 'won', 'lost'];
+                    handleStatusChange(statuses[idx]);
+                  }}>
+                    <TabList bg="whiteAlpha.50" p={1} borderRadius="full">
+                      <Tab color="whiteAlpha.600" _selected={{ color: 'white', bg: 'blue.500' }}>All</Tab>
+                      <Tab color="whiteAlpha.600" _selected={{ color: 'white', bg: 'blue.500' }}>Active</Tab>
+                      <Tab color="whiteAlpha.600" _selected={{ color: 'white', bg: 'blue.500' }}>Won</Tab>
+                      <Tab color="whiteAlpha.600" _selected={{ color: 'white', bg: 'blue.500' }}>Lost</Tab>
+                    </TabList>
+                  </Tabs>
                 </HStack>
-              </Box>
+              </Flex>
 
-              <Box bg="dark.600" rounded="lg" p={4}>
-                <HStack justify="space-between">
-                  <VStack align="start" spacing={1}>
-                    <Text fontSize="sm" color="gray.400">Markets Won</Text>
-                    <Text fontSize="2xl" fontWeight="bold" color="green.400">
-                      {data.counts.won}
-                    </Text>
-                    <Text fontSize="xs" color="gray.500">Successful claims</Text>
-                  </VStack>
-                  <Text fontSize="2xl">🏆</Text>
-                </HStack>
-              </Box>
+              <Table variant="simple" size="sm">
+                <Thead>
+                  <Tr borderBottomWidth="2px" borderColor="whiteAlpha.100">
+                    <Th color="whiteAlpha.400">Market</Th>
+                    <Th color="whiteAlpha.400">Side</Th>
+                    <Th color="whiteAlpha.400" isNumeric>Amount</Th>
+                    <Th color="whiteAlpha.400" isNumeric>P&L</Th>
+                    <Th color="whiteAlpha.400">Status</Th>
+                    <Th color="whiteAlpha.400">Date</Th>
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {isLoadingHistory ? (
+                    <Tr>
+                      <Td colSpan={6} py={10} textAlign="center">
+                        <Spinner color="blue.500" />
+                      </Td>
+                    </Tr>
+                  ) : history.length > 0 ? (
+                    history.map((bet) => (
+                      <Tr 
+                        key={bet.bet_id} 
+                        _hover={{ bg: 'whiteAlpha.50' }} 
+                        transition="all 0.2s"
+                        cursor="pointer"
+                        onClick={() => router.push(`/markets/${bet.market_addr}`)}
+                      >
+                        <Td>
+                          <VStack align="start" spacing={0}>
+                            <Text color="white" fontWeight="bold">{bet.pair_name}</Text>
+                            <Text fontSize="2xs" color="whiteAlpha.400">{bet.market_addr.slice(0, 10)}...</Text>
+                          </VStack>
+                        </Td>
+                        <Td>
+                          <Badge colorScheme={bet.side === 'Long' ? 'green' : 'red'} variant="subtle">
+                            {bet.side.toUpperCase()}
+                          </Badge>
+                        </Td>
+                        <Td isNumeric color="white">${bet.bet_amount}</Td>
+                        <Td isNumeric>
+                          <PnlIndicator value={bet.pnl} fontSize="xs" showIcon={false} />
+                        </Td>
+                        <Td>
+                          <Badge 
+                            variant="solid" 
+                            colorScheme={
+                              bet.status === 'won' ? 'green' : 
+                              bet.status === 'lost' ? 'red' : 
+                              bet.status === 'active' ? 'blue' : 'gray'
+                            }
+                            fontSize="2xs"
+                          >
+                            {bet.status.toUpperCase()}
+                          </Badge>
+                        </Td>
+                        <Td color="whiteAlpha.600" fontSize="xs">
+                          {new Date(bet.bet_time).toLocaleDateString()}
+                        </Td>
+                      </Tr>
+                    ))
+                  ) : (
+                    <Tr>
+                      <Td colSpan={6} py={10} textAlign="center" color="whiteAlpha.400">
+                        No trade history found
+                      </Td>
+                    </Tr>
+                  )}
+                </Tbody>
+              </Table>
+            </Box>
 
-              <Box bg="dark.600" rounded="lg" p={4}>
-                <HStack justify="space-between">
-                  <VStack align="start" spacing={1}>
-                    <Text fontSize="sm" color="gray.400">Total Bet Amount</Text>
-                    <Text fontSize="2xl" fontWeight="bold" color="white">
-                      {formatHuman(data.totals.bet.human)} APT
-                    </Text>
-                    <Text fontSize="xs" color="gray.500" fontFamily="mono">
-                      Raw: {data.totals.bet.raw}
-                    </Text>
-                  </VStack>
-                  <Text fontSize="2xl">💰</Text>
-                </HStack>
-              </Box>
-
-              <Box bg="dark.600" rounded="lg" p={4}>
-                <HStack justify="space-between">
-                  <VStack align="start" spacing={1}>
-                    <Text fontSize="sm" color="gray.400">Total Winnings</Text>
-                    <Text fontSize="2xl" fontWeight="bold" color="green.400">
-                      {formatHuman(data.totals.winning.human)} APT
-                    </Text>
-                    <Text fontSize="xs" color="gray.500" fontFamily="mono">
-                      Raw: {data.totals.winning.raw}
-                    </Text>
-                  </VStack>
-                  <Text fontSize="2xl">💎</Text>
-                </HStack>
-              </Box>
-            </VStack>
-          </VStack>
-        </Box>
-
-        {/* Owner Stats Column */}
-        <Box bg="dark.700" rounded="xl" p={6} border="1px" borderColor="dark.600">
-          <VStack spacing={4} align="stretch">
-            <HStack>
-              <Text fontSize="lg" fontWeight="semibold" color="purple.400">👑 Owner Statistics</Text>
-              <Badge colorScheme="purple" variant="subtle">As Creator</Badge>
-            </HStack>
-            
-            <VStack spacing={3} align="stretch">
-              <Box bg="dark.600" rounded="lg" p={4}>
-                <HStack justify="space-between">
-                  <VStack align="start" spacing={1}>
-                    <Text fontSize="sm" color="gray.400">Markets Created</Text>
-                    <Text fontSize="2xl" fontWeight="bold" color="white">
-                      {data.counts.created}
-                    </Text>
-                    <Text fontSize="xs" color="gray.500">Markets created as owner</Text>
-                  </VStack>
-                  <Text fontSize="2xl">➕</Text>
-                </HStack>
-              </Box>
-
-              <Box bg="dark.600" rounded="lg" p={4}>
-                <HStack justify="space-between">
-                  <VStack align="start" spacing={1}>
-                    <Text fontSize="sm" color="gray.400">Total Fee Earned</Text>
-                    <Text fontSize="2xl" fontWeight="bold" color="purple.400">
-                      {formatHuman(data.totals.owner_fee.human)} APT
-                    </Text>
-                    <Text fontSize="xs" color="gray.500" fontFamily="mono">
-                      Raw: {data.totals.owner_fee.raw}
-                    </Text>
-                  </VStack>
-                  <Text fontSize="2xl">👑</Text>
-                </HStack>
-              </Box>
-
-              <Box bg="dark.600" rounded="lg" p={4}>
-                <HStack justify="space-between">
-                  <VStack align="start" spacing={1}>
-                    <Text fontSize="sm" color="gray.400">Win Rate</Text>
-                    <Text fontSize="2xl" fontWeight="bold" color="green.400">
-                      {data.counts.played > 0 ? ((data.counts.won / data.counts.played) * 100).toFixed(1) : 0}%
-                    </Text>
-                    <Text fontSize="xs" color="gray.500">Success rate as bettor</Text>
-                  </VStack>
-                  <Text fontSize="2xl">📊</Text>
-                </HStack>
-              </Box>
-
-              <Box bg="dark.600" rounded="lg" p={4}>
-                <HStack justify="space-between">
-                  <VStack align="start" spacing={1}>
-                    <Text fontSize="sm" color="gray.400">Net Profit</Text>
-                    <Text fontSize="2xl" fontWeight="bold" color="green.400">
-                      {formatHuman((parseFloat(data.totals.winning.human) - parseFloat(data.totals.bet.human)).toFixed(6))} APT
-                    </Text>
-                    <Text fontSize="xs" color="gray.500">Winnings - Bets</Text>
-                  </VStack>
-                  <Text fontSize="2xl">📈</Text>
-                </HStack>
-              </Box>
-            </VStack>
-          </VStack>
-        </Box>
-      </Grid>
-
-      {/* Activity Section */}
-      <Box bg="dark.700" rounded="xl" border="1px" borderColor="dark.600">
-        <Box p={6}>
-          <Text fontSize="lg" fontWeight="semibold" color="white" mb={4}>📋 Activity Feed</Text>
-          
-          <Table variant="simple" colorScheme="dark">
-            <Thead>
-              <Tr>
-                <Th color="gray.400">Type</Th>
-                <Th color="gray.400">Market</Th>
-                <Th color="gray.400">Amount</Th>
-                <Th color="gray.400">Status</Th>
-                <Th color="gray.400">Time</Th>
-              </Tr>
-            </Thead>
-            <Tbody>
-              {isLoadingActivity ? (
-                <Center py={4}>
-                  <Spinner size="sm" color="blue.500" />
-                  <Text ml={2} fontSize="sm" color="gray.400">Loading activity...</Text>
-                </Center>
-              ) : activityData.length > 0 ? (
-                activityData.map((activity, index) => (
-                <Tr key={index}>
-                  <Td>
-                    <HStack>
-                      <Text fontSize="lg">{getActivityIcon(activity.type)}</Text>
-                      <Badge colorScheme={getActivityColor(activity.type)} variant="subtle">
-                        {activity.type.toUpperCase()}
-                      </Badge>
-                    </HStack>
-                  </Td>
-                  <Td>
-                    <Text color="white" fontSize="sm" fontFamily="mono">
-                      {shorten(activity.market_addr, 8, 6)}
-                    </Text>
-                  </Td>
-                  <Td>
-                    <Text color="white" fontWeight="semibold">
-                      {activity.amount}
-                    </Text>
-                  </Td>
-                  <Td>
-                    <Badge 
-                      colorScheme={activity.status === 'won' || activity.status === 'completed' ? 'green' : 
-                                  activity.status === 'lost' ? 'red' : 'blue'} 
-                      variant="subtle"
-                    >
-                      {activity.status}
-                    </Badge>
-                  </Td>
-                  <Td>
-                    <Text color="gray.400" fontSize="sm">
-                      {activity.time}
-                    </Text>
-                  </Td>
-                </Tr>
-              ))) : (
-                <Tr>
-                  <Td colSpan={5} textAlign="center" py={8}>
-                    <Text color="gray.500">No activity found</Text>
-                  </Td>
-                </Tr>
-              )}
-            </Tbody>
-          </Table>
-        </Box>
-      </Box>
+            <PaginationControls 
+              currentPage={currentPage} 
+              totalPages={totalPages} 
+              onPageChange={handlePageChange}
+              isLoading={isLoadingHistory}
+            />
+          </Box>
+        </Grid>
+      </Container>
     </Box>
   );
 }
